@@ -67,10 +67,10 @@ def conv2d(input_, output_dim,
     return conv
 
 def transpose_conv2d(input_, output_shape,
-       k_h=5, k_w=5, d_h=2, d_w=2, stddev=0.04,
+       k_h=5, k_w=5, d_h=2, d_w=2, stddev=0.2,
        name="transpose_conv2d"):
   """
-  0.04 = 1/(5*5) = 1/(k_h*k_w)
+  0.2 = sqrt(1/(5*5)) = sqrt(Var(w)) = sqrt(1/(k_h*k_w))
   在卷积的计算中，假设输入为4*4，卷积核大小为2*2，stride为2，那么输出为2*2(padding=valid)
   首先将输入reshape为1*16，输出reshape为1*4，那么y=xc,这里c为16*4的稀疏权值矩阵，在转置卷积中
   我们要对输入进行上采样，即从y还原x，那么y*c(t)=x，c(t)为c的转置矩阵，但是从y=xc直观来看，应该有
