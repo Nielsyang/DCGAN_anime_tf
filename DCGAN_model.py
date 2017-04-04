@@ -155,8 +155,8 @@ class DCGAN(object):
         
 
         errD_fake, errD_real, errG, prob_d_fake, prob_d_real = self.sess.run(
-        	[self.d_loss_fake, self.d_loss_real, self.g_loss, self.prob_d_fake, self.prob_d_real],
-        	feed_dict={self.fake:batch_fake, self.inputs:batch_images})
+          [self.d_loss_fake, self.d_loss_real, self.g_loss, self.prob_d_fake, self.prob_d_real],
+          feed_dict={self.fake:batch_fake, self.inputs:batch_images})
 
         counter += 1
         print("Epoch:[%2d] time: %4.4f, d_loss: %.8f, g_loss: %.8f, d_fake_prob: %.5f, d_real_prob: %.5f" \
@@ -175,7 +175,7 @@ class DCGAN(object):
                   './{}/train_{:02d}_{:04d}.png'.format(config.sample_dir, epoch, idx))
             print("[Sample] d_loss: %.8f, g_loss: %.8f" % (d_loss, g_loss)) 
           except:
-            print("Save pic error!")
+            print("Save img error!")
 
         if np.mod(counter, batch_idxs*2) == 0:
           self.save(config.checkpoint_dir, counter)
@@ -185,83 +185,85 @@ class DCGAN(object):
       if reuse:
         scope.reuse_variables()
 
-      h0 = lrelu(conv2d(image, self.d_filter_num, name='d_h0_conv'))
-      h1 = lrelu(self.d_bn1(conv2d(h0, self.d_filter_num*2, name='d_h1_conv')))
-      h2 = lrelu(self.d_bn2(conv2d(h1, self.d_filter_num*4, name='d_h2_conv')))
-      h3 = lrelu(self.d_bn3(conv2d(h2, self.d_filter_num*8, name='d_h3_conv')))
-      h4 = linear(tf.reshape(h3, [self.batch_size, -1]), 1, 'd_h3_lin')
+      hidden0 = lrelu(conv2d(image, self.d_filter_num, name='d_hidden0_conv'))
+      hidden1 = lrelu(self.d_bn1(conv2d(hidden0, self.d_filter_num*2, name='d_hidden1_conv')))
+      hidden2 = lrelu(self.d_bn2(conv2d(hidden1, self.d_filter_num*4, name='d_hidden2_conv')))
+      hidden3 = lrelu(self.d_bn3(conv2d(hidden2, self.d_filter_num*8, name='d_hidden3_conv')))
+      hidden4 = linear(tf.reshape(hidden3, [self.batch_size, -1]), 1, 'd_hidden3_lin')
 
-      #sigmoid change h4 to prob because h4 may not in [0,1]
-      #but h4 is the parameter because sigmoid_cross_entroy_with_logits loss function
-      #include a sigmoid function
-      return tf.nn.sigmoid(h4), h4
+      # sigmoid change h4 to prob because h4 may not in [0,1]
+      # but h4 is the parameter because sigmoid_cross_entroy_with_logits loss function
+      # include a sigmoid function
+      return tf.nn.sigmoid(hidden4), hidden4
 
-  #all trainable weight and bias are defined in ops(conv2d,trans_conv2d,linear)
+  # all trainable weight and bias are defined in ops(conv2d,trans_conv2d,linear)
   def generator(self, fake_data):
     with tf.variable_scope("generator") as scope:
-      s_h, s_w = self.img_size, self.img_size
-      s_h2, s_h4, s_h8, s_h16 = \
-          int(s_h/2), int(s_h/4), int(s_h/8), int(s_h/16)
-      s_w2, s_w4, s_w8, s_w16 = \
-          int(s_w/2), int(s_w/4), int(s_w/8), int(s_w/16)
+      h, w = self.img_size, self.img_size
+
+      h2, h4, h8, hidden16 = \
+          int(h/2), int(h/4), int(h/8), int(h/16)
+
+      w2, w4, w8, w16 = \
+          int(w/2), int(w/4), int(w/8), int(w/16)
 
       fake_= linear(
-          fake_data, self.g_filter_num*8*s_h16*s_w16, 'g_h0_lin')
+          fake_data, self.g_filter_num*8*h16*w16, 'g_hidden0_lin')
 
-      h0 = tf.reshape(
-          fake_, [-1, s_h16, s_w16, self.g_filter_num * 8])
-      h0 = tf.nn.relu(self.g_bn0(h0))
+      hidden0 = tf.reshape(
+          fake_, [-1, h16, w16, self.g_filter_num * 8])
+      hidden0 = tf.nn.relu(self.g_bn0(hidden0))
 
-      h1= transpose_conv2d(
-          h0, [self.batch_size, s_h8, s_w8, self.g_filter_num*4], name='g_h1')
-      h1 = tf.nn.relu(self.g_bn1(h1))
+      hidden1= transpose_conv2d(
+          hidden0, [self.batch_size, h8, w8, self.g_filter_num*4], name='g_hidden1')
+      hidden1 = tf.nn.relu(self.g_bn1(hidden1))
 
-      h2= transpose_conv2d(
-          h1, [self.batch_size, s_h4, s_w4, self.g_filter_num*2], name='g_h2')
-      h2 = tf.nn.relu(self.g_bn2(h2))
+      hidden2= transpose_conv2d(
+          hidden1, [self.batch_size, h4, w4, self.g_filter_num*2], name='g_hidden2')
+      hidden2 = tf.nn.relu(self.g_bn2(hidden2))
 
-      h3= transpose_conv2d(
-          h2, [self.batch_size, s_h2, s_w2, self.g_filter_num*1], name='g_h3')
-      h3 = tf.nn.relu(self.g_bn3(h3))
+      hidden3= transpose_conv2d(
+          hidden2, [self.batch_size, h2, w2, self.g_filter_num*1], name='g_hidden3')
+      hidden3 = tf.nn.relu(self.g_bn3(hidden3))
 
-      h4= transpose_conv2d(
-          h3, [self.batch_size, s_h, s_w, self.channel_dim], name='g_h4')
+      hidden4= transpose_conv2d(
+          hidden3, [self.batch_size, h, w, self.channel_dim], name='g_hidden4')
 
-      #tanh function normlized the output to [-1,1]
-      #because we normlized the real image into [-1,1]
-      #G's output is also D's input
-      return tf.nn.tanh(h4)
+      # tanh function normlized the output to [-1,1]
+      # because we normlized the real image into [-1,1]
+      # G's output is also D's input
+      return tf.nn.tanh(hidden4)
 
-  #sampler function sample fake images per 100 steps
-  #and merge all fake images into one image for visualize
-  #so sampler dont update the weight and bias parameters
+  # sampler function sample fake images per 100 steps
+  # and merge all fake images into one image for visualize
+  # so sampler dont update the weight and bias parameters
   def sampler(self, fake_data):
     with tf.variable_scope("generator") as scope:
       scope.reuse_variables()
         
-      s_h, s_w = self.img_size, self.img_size
-      s_h2, s_h4, s_h8, s_h16 = \
-          int(s_h/2), int(s_h/4), int(s_h/8), int(s_h/16)
-      s_w2, s_w4, s_w8, s_w16 = \
-          int(s_w/2), int(s_w/4), int(s_w/8), int(s_w/16)
+      h, w = self.img_size, self.img_size
+      h2, h4, h8, hidden16 = \
+          int(h/2), int(h/4), int(h/8), int(h/16)
+      w2, w4, w8, w16 = \
+          int(w/2), int(w/4), int(w/8), int(w/16)
 
-      h0 = tf.reshape(
-          linear(fake_data, self.g_filter_num*8*s_h16*s_w16, 'g_h0_lin'),
-          [-1, s_h16, s_w16, self.g_filter_num * 8])
-      h0 = tf.nn.relu(self.g_bn0(h0, train=False))
+      hidden0 = tf.reshape(
+          linear(fake_data, self.g_filter_num*8*h16*w16, 'g_hidden0_lin'),
+          [-1, h16, w16, self.g_filter_num * 8])
+      hidden0 = tf.nn.relu(self.g_bn0(hidden0, train=False))
 
-      h1 = transpose_conv2d(h0, [self.batch_size, s_h8, s_w8, self.g_filter_num*4], name='g_h1')
-      h1 = tf.nn.relu(self.g_bn1(h1, train=False))
+      hidden1 = transpose_conv2d(hidden0, [self.batch_size, h8, w8, self.g_filter_num*4], name='g_hidden1')
+      hidden1 = tf.nn.relu(self.g_bn1(hidden1, train=False))
 
-      h2 = transpose_conv2d(h1, [self.batch_size, s_h4, s_w4, self.g_filter_num*2], name='g_h2')
-      h2 = tf.nn.relu(self.g_bn2(h2, train=False))
+      hidden2 = transpose_conv2d(hidden1, [self.batch_size, h4, w4, self.g_filter_num*2], name='g_hidden2')
+      hidden2 = tf.nn.relu(self.g_bn2(hidden2, train=False))
 
-      h3 = transpose_conv2d(h2, [self.batch_size, s_h2, s_w2, self.g_filter_num*1], name='g_h3')
-      h3 = tf.nn.relu(self.g_bn3(h3, train=False))
+      hidden3 = transpose_conv2d(hidden2, [self.batch_size, h2, w2, self.g_filter_num*1], name='g_hidden3')
+      hidden3 = tf.nn.relu(self.g_bn3(hidden3, train=False))
 
-      h4 = transpose_conv2d(h3, [self.batch_size, s_h, s_w, self.channel_dim], name='g_h4')
+      hidden4 = transpose_conv2d(hidden3, [self.batch_size, h, w, self.channel_dim], name='g_hidden4')
 
-      return tf.nn.tanh(h4)
+      return tf.nn.tanh(hidden4)
 
   def save(self, checkpoint_dir, step):
     model_name = "DCGAN.model"
