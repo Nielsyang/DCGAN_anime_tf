@@ -1,0 +1,368 @@
+from __future__ import division
+import os
+import time
+from glob import glob
+import tensorflow as tf
+import numpy as np
+from six.moves import xrange
+from utils import *
+
+class DCGAN(object):
+  def __init__(self, sess, img_size=64, batch_size=64, sample_num = 64,
+         fake_data_dim=100, num_conditions=2, g_filter_num=64, d_filter_num=64, channel_dim=3, 
+         dataset_name='default', filename_pattern='*.jpg', checkpoint_dir=None, sample_dir=None):
+
+    self.sess = sess
+    self.is_grayscale = (channel_dim == 1)
+
+    self.batch_size = batch_size
+    self.sample_num = sample_num
+
+    self.img_size = img_size
+
+    self.fake_data_dim = fake_data_dim
+    self.num_conditions = num_conditions
+
+    self.g_filter_num = g_filter_num
+    self.d_filter_num = d_filter_num
+
+    self.channel_dim = channel_dim
+
+    self.d_bn1 = batch_norm(name='d_bn1')
+    self.d_bn2 = batch_norm(name='d_bn2')
+    self.d_bn3 = batch_norm(name='d_bn3')
+
+    self.g_bn0 = batch_norm(name='g_bn0')
+    self.g_bn1 = batch_norm(name='g_bn1')
+    self.g_bn2 = batch_norm(name='g_bn2')
+    self.g_bn3 = batch_norm(name='g_bn3')
+
+    self.dataset_name = dataset_name
+    self.filename_pattern = filename_pattern
+    self.checkpoint_dir = checkpoint_dir
+    self.build_model()
+
+  def build_model(self):
+    image_dims = [self.img_size, self.img_size, self.channel_dim]
+
+    self.inputs = tf.placeholder(
+      tf.float32, [self.batch_size] + image_dims, name='real_images')
+
+    #if shape = None you can feed any shape of tensor 
+    self.fake = tf.placeholder(
+      tf.float32, [None, self.fake_data_dim], name='fake_data')
+
+    self.condition_c = tf.placeholder(tf.int64, [None,], name='correct_limited_conditions')
+    self.condition_w = tf.placeholder(tf.int64, [None,], name='random_limited_conditions')
+    self.condition_w_r = tf.placeholder(tf.int64, [None,], name='wrong_limited_conditions')
+
+    self.G = self.generator(self.fake, self.condition_w)
+    self.D_real, self.D_real_logits = self.discriminator(self.inputs, self.condition_c)
+
+    self.sampler = self.sampler(self.fake, self.condition_w)
+    self.D_fake, self.D_fake_logits = self.discriminator(self.G, self.condition_w, reuse=True)
+    self.D_wrong_real, self.D_wrong_real_logits = self.discriminator(self.inputs, self.condition_w_r, reuse=True)
+
+    self.d_loss_real = tf.reduce_mean(
+      tf.nn.sigmoid_cross_entropy_with_logits(
+        logits=self.D_real_logits, labels=tf.ones_like(self.D_real)))
+
+    self.d_loss_fake = tf.reduce_mean(
+      tf.nn.sigmoid_cross_entropy_with_logits(
+        logits=self.D_fake_logits, labels=tf.zeros_like(self.D_fake)))
+
+    self.d_loss_wrong_real = tf.reduce_mean(
+      tf.nn.sigmoid_cross_entropy_with_logits(
+        logits=self.D_wrong_real_logits, labels=tf.zeros_like(self.D_wrong_real)))
+
+    self.g_loss = tf.reduce_mean(
+      tf.nn.sigmoid_cross_entropy_with_logits(
+        logits=self.D_fake_logits, labels=tf.ones_like(self.D_fake)))
+
+    self.prob_d_real = tf.reduce_mean(self.D_real)
+    self.prob_d_fake = tf.reduce_mean(self.D_fake)
+    self.prob_d_wrong_real = tf.reduce_mean(self.D_wrong_real)
+
+    self.prob_d_real_sum = tf.summary.scalar("prob_d_real", self.prob_d_real)
+    self.prob_d_fake_sum = tf.summary.scalar("prob_d_fake", self.prob_d_fake)
+    self.prob_wrong_real_sum = tf.summary.scalar("prob_wrong_real", self.prob_d_wrong_real)
+    self.d_loss_real_sum = tf.summary.scalar("d_loss_real", self.d_loss_real)
+    self.d_loss_fake_sum = tf.summary.scalar("d_loss_fake", self.d_loss_fake)
+    self.d_loss_wrong_real_sum = tf.summary.scalar("d_loss_wrong_real", self.d_loss_wrong_real)
+                          
+
+    self.g_loss_sum = tf.summary.scalar("g_loss", self.g_loss)
+
+    t_vars = tf.trainable_variables()
+
+    self.d_vars = [var for var in t_vars if 'd_' in var.name]
+    self.g_vars = [var for var in t_vars if 'g_' in var.name]
+
+    self.saver = tf.train.Saver()
+
+  def train(self, config):
+    """ suppose you have organize the data as follows:               """
+    """ data:                                                        """
+    """   *_1:                                                       """
+    """     *.jpg                                                    """
+    """   *_2:                                                       """
+    """     *.jpg                                                    """
+    """   *_3:                                                       """
+    """     *.jpg                                                    """
+    """   ...                                                        """
+    """ dir *n should be the limited img that limited condition key=n"""
+
+    """get filename queue"""
+    data = get_data(os.path.join("./data", config.dataset), self.num_conditions)
+
+    g_optim = tf.train.AdamOptimizer(config.learning_rate, beta1=config.beta1) \
+              .minimize(self.g_loss, var_list=self.g_vars)
+
+    """there are two losses to train discriminitor"""
+    """(1) generated img + random condition"""
+    """(2) real img + wrong condition"""
+    d_optim_fake_img = tf.train.AdamOptimizer(config.learning_rate, beta1=config.beta1) \
+    .minimize(self.d_loss_real+self.d_loss_fake, var_list=self.d_vars)
+
+    d_optim_wrong_cond = tf.train.AdamOptimizer(config.learning_rate, beta1=config.beta1) \
+    .minimize(self.d_loss_real+self.d_loss_wrong_real, var_list=self.d_vars)
+
+    tf.global_variables_initializer().run()
+
+    self.g_sum = tf.summary.merge([self.d_loss_fake_sum, self.g_loss_sum, self.prob_d_fake_sum])
+
+    self.d_sum_wrong_real = tf.summary.merge(
+      [self.d_loss_real_sum, self.d_loss_wrong_real_sum, self.prob_wrong_real_sum])
+
+    self.d_sum_fake_real = tf.summary.merge(
+      [self.d_loss_real_sum, self.prob_d_real_sum])
+
+    self.writer = tf.summary.FileWriter("./logs", self.sess.graph)
+  
+    counter = 1
+    start_time = time.time()
+
+    if self.load(self.checkpoint_dir):
+      print("Load model success")
+    else:
+      print("Load model failed")
+
+    for epoch in xrange(config.epoch):
+      batch_idxs = config.train_size // config.batch_size
+
+      for idx in xrange(0, batch_idxs):
+        """positive examples randomly choose from (*_1,*_2,*_3...*_n)"""
+        """negative examples randomly choose from:"""
+        """(1) generated img + random condition"""
+        """(2) real img + wrong condition"""
+        c_c = np.array([np.random.randint(1, self.num_conditions+1)]*self.batch_size).reshape(self.batch_size,)
+        batch_files = get_batch_data(c_c[0], data, self.batch_size, idx)
+        batch = [get_image(batch_file, img_size=self.img_size, is_grayscale=self.is_grayscale) for batch_file in batch_files]
+        if (self.is_grayscale):
+          batch_images = np.array(batch).astype(np.float32)[:, :, :, None]
+        else:
+          batch_images = np.array(batch).astype(np.float32)
+
+        c_w = [np.random.randint(1,self.num_conditions+1) for i in range(self.batch_size)]
+        c_w = np.array(c_w).reshape(self.batch_size,)
+        c_w_r = np.array([0 for i in range(self.batch_size)]).reshape(self.batch_size,)
+
+        for i in range(self.batch_size):
+          if c_c[0]==1:
+            c_w_r[i] = np.random.randint(2,self.num_conditions+1)
+          elif c_c[0]==self.num_conditions:
+            c_w_r[i] = np.random.randint(1,self.num_conditions)
+          else:
+            left_randint = np.random.randint(1, c_c[0])
+            right_randint = np.random.randint(c_c[0]+1, self.num_conditions+1)
+            c_w_r[i] = left_randint if np.random.randint(2)==0 else right_randint
+
+        batch_fake = np.random.uniform(-1, 1, [config.batch_size, self.fake_data_dim]).astype(np.float32)
+        choose_negative = np.random.randint(2)
+
+        if choose_negative == 0:
+          d_optim = d_optim_fake_img
+          d_loss = self.d_loss_real+self.d_loss_fake
+
+          feed_d = {self.inputs:batch_images, self.condition_c:c_c, self.fake:batch_fake, self.condition_w:c_w}
+          d_sum = self.d_sum_fake_real
+        else:
+          d_optim = d_optim_wrong_cond
+          d_loss = self.d_loss_real+self.d_loss_wrong_real
+
+          feed_d = {self.inputs:batch_images, self.condition_c:c_c, self.condition_w_r:c_w_r}
+          d_sum = self.d_sum_wrong_real
+
+        _, summary_str = self.sess.run([d_optim, d_sum],
+            feed_dict=feed_d)
+        self.writer.add_summary(summary_str, counter)
+
+        _, summary_str = self.sess.run([g_optim, self.g_sum],
+                         feed_dict={ self.fake:batch_fake, self.condition_w:c_w})
+        self.writer.add_summary(summary_str, counter) 
+
+        # Run g_optim twice prevent gradient vanish
+        _, summary_str = self.sess.run([g_optim, self.g_sum],
+                         feed_dict={ self.fake:batch_fake, self.condition_w:c_w})
+        self.writer.add_summary(summary_str, counter)
+
+        err_D, err_G, prob_d_fake, prob_d_real, prob_d_wrong_real = self.sess.run(
+          [d_loss, self.g_loss, self.prob_d_fake, self.prob_d_real, self.prob_d_wrong_real],
+          feed_dict={self.inputs:batch_images, self.condition_c:c_c,
+                     self.fake:batch_fake, self.condition_w:c_w,
+                     self.condition_w_r:c_w_r})
+
+        counter += 1
+        print("Epoch:[%2d] time: %4.4f, d_loss: %.8f, g_loss: %.8f, d_fake_prob: %.5f, d_real_prob: %.5f, prob_wrong_real: %.5f" \
+          % (epoch, time.time()-start_time, err_D, err_G, prob_d_fake, prob_d_real, prob_d_wrong_real))
+
+        """sample per epoch"""
+        if np.mod(counter, batch_idxs) == 0:
+          try:
+            samples = self.sess.run(
+              self.sampler,
+              feed_dict={self.fake:batch_fake, self.condition_w:c_w})
+
+            save_images(samples, [8, 8],
+                  './{}/train_{:02d}_{:04d}.png'.format(config.sample_dir, epoch, idx))
+          except:
+            print("Save img error!")
+
+        if np.mod(counter, batch_idxs*2) == 0:
+          self.save(config.checkpoint_dir, counter)
+
+  def test(self, config):
+    if self.load(self.checkpoint_dir):
+      print("Load model success")
+    else:
+      print("Load model failed")
+    try:
+      fake_data = np.random.uniform(-1, 1, [config.batch_size, self.fake_data_dim]).astype(np.float32)
+      samples = self.sess.run(self.sampler,
+                              feed_dict={self.fake:fake_data, self.condition_w:config.condition})
+
+      save_images(samples, [8, 8],
+        './{}/test_.png'.format(config.test_dir))
+    except:
+      print("test img error")
+
+  def discriminator(self, image, condition, reuse=False):
+    """use condition you can generate limited img"""
+    """first there is a dic map string condition to int"""
+    """for example {1:'long hair', 2:'short hair'}"""
+    """if condition is 1, your generate img should have long hair"""
+    with tf.variable_scope("discriminator") as scope:
+      if reuse:
+        scope.reuse_variables()
+
+      condition_input = tf.one_hot(condition, self.num_conditions)
+      # print(condition_input)
+      condition_input = linear(condition_input, self.img_size*self.img_size*self.channel_dim, 'd_hidden0_line')
+      condition_input = tf.reshape(condition_input, [self.batch_size,self.img_size,self.img_size,self.channel_dim])
+      image = tf.concat([condition_input, image],3)
+
+      hidden0 = lrelu(conv2d(image, self.d_filter_num, name='d_hidden0_conv'))
+      hidden1 = lrelu(self.d_bn1(conv2d(hidden0, self.d_filter_num*2, name='d_hidden1_conv')))
+      hidden2 = lrelu(self.d_bn2(conv2d(hidden1, self.d_filter_num*4, name='d_hidden2_conv')))
+      hidden3 = lrelu(self.d_bn3(conv2d(hidden2, self.d_filter_num*8, name='d_hidden3_conv')))
+      hidden4 = linear(tf.reshape(hidden3, [self.batch_size, -1]), 1, 'd_hidden3_lin')
+
+      # sigmoid change h4 to prob because h4 may not in [0,1]
+      # but h4 is the parameter because sigmoid_cross_entroy_with_logits loss function
+      # include a sigmoid function
+      return tf.nn.sigmoid(hidden4), hidden4
+
+  # all trainable weight and bias are defined in ops(conv2d,trans_conv2d,linear)
+  def generator(self, fake_data, condition):
+    with tf.variable_scope("generator") as scope:
+      h, w = self.img_size, self.img_size
+
+      h2, h4, h8, h16 = \
+          int(h/2), int(h/4), int(h/8), int(h/16)
+
+      w2, w4, w8, w16 = \
+          int(w/2), int(w/4), int(w/8), int(w/16)
+
+      fake_data = tf.concat([fake_data, tf.one_hot(condition, self.num_conditions)], 1)
+
+      hidden0 = tf.reshape(
+          linear(fake_data, self.g_filter_num*8*h16*w16, 'g_hidden0_lin'),
+          [-1, h16, w16, self.g_filter_num * 8])
+      hidden0 = tf.nn.relu(self.g_bn0(hidden0))
+
+      hidden1= transpose_conv2d(
+          hidden0, [self.batch_size, h8, w8, self.g_filter_num*4], name='g_hidden1')
+      hidden1 = tf.nn.relu(self.g_bn1(hidden1))
+
+      hidden2= transpose_conv2d(
+          hidden1, [self.batch_size, h4, w4, self.g_filter_num*2], name='g_hidden2')
+      hidden2 = tf.nn.relu(self.g_bn2(hidden2))
+
+      hidden3= transpose_conv2d(
+          hidden2, [self.batch_size, h2, w2, self.g_filter_num*1], name='g_hidden3')
+      hidden3 = tf.nn.relu(self.g_bn3(hidden3))
+
+      hidden4= transpose_conv2d(
+          hidden3, [self.batch_size, h, w, self.channel_dim], name='g_hidden4')
+
+      # tanh function normlized the output to [-1,1]
+      # because we normlized the real image into [-1,1]
+      # G's output is also D's input
+      return tf.nn.tanh(hidden4)
+
+  # sampler function sample fake images per 100 steps
+  # and merge all fake images into one image for visualize
+  # so sampler dont update the weight and bias parameters
+  def sampler(self, fake_data, condition):
+    with tf.variable_scope("generator") as scope:
+      scope.reuse_variables()
+        
+      h, w = self.img_size, self.img_size
+
+      h2, h4, h8, h16 = \
+          int(h/2), int(h/4), int(h/8), int(h/16)
+
+      w2, w4, w8, w16 = \
+          int(w/2), int(w/4), int(w/8), int(w/16)
+
+      fake_data = tf.concat([fake_data, tf.one_hot(condition, self.num_conditions)], 1)
+      hidden0 = tf.reshape(
+          linear(fake_data, self.g_filter_num*8*h16*w16, 'g_hidden0_lin'),
+          [-1, h16, w16, self.g_filter_num * 8])
+      hidden0 = tf.nn.relu(self.g_bn0(hidden0, train=False))
+
+      hidden1 = transpose_conv2d(hidden0, [self.batch_size, h8, w8, self.g_filter_num*4], name='g_hidden1')
+      hidden1 = tf.nn.relu(self.g_bn1(hidden1, train=False))
+
+      hidden2 = transpose_conv2d(hidden1, [self.batch_size, h4, w4, self.g_filter_num*2], name='g_hidden2')
+      hidden2 = tf.nn.relu(self.g_bn2(hidden2, train=False))
+
+      hidden3 = transpose_conv2d(hidden2, [self.batch_size, h2, w2, self.g_filter_num*1], name='g_hidden3')
+      hidden3 = tf.nn.relu(self.g_bn3(hidden3, train=False))
+
+      hidden4 = transpose_conv2d(hidden3, [self.batch_size, h, w, self.channel_dim], name='g_hidden4')
+
+      return tf.nn.tanh(hidden4)
+
+  def save(self, checkpoint_dir, step):
+    model_name = "DCGAN.model"
+
+    if not os.path.exists(checkpoint_dir):
+      os.makedirs(checkpoint_dir)
+
+    self.saver.save(self.sess,
+            os.path.join(checkpoint_dir, model_name),
+            global_step=step)
+
+  def load(self, checkpoint_dir):
+    print("Reading checkpoints...")
+
+    ckpt = tf.train.get_checkpoint_state(checkpoint_dir)
+    if ckpt and ckpt.model_checkpoint_path:
+      ckpt_name = os.path.basename(ckpt.model_checkpoint_path)
+      self.saver.restore(self.sess, os.path.join(checkpoint_dir, ckpt_name))
+      print("Success to read {}".format(ckpt_name))
+      return True
+    else:
+      print("Failed to find a checkpoint")
+      return False
