@@ -1,21 +1,43 @@
+ # -*- coding: utf-8 -*- 
 from __future__ import division
 import scipy.misc
 import numpy as np
 import tensorflow as tf
+import os
 
 
 def get_image(image_path, img_size, is_grayscale=False):
   image = imread(image_path, is_grayscale)
   return transform(image, img_size)
 
+def get_data(data_dir, num_conditions):
+  data = [[] for i in range(num_conditions)]
+  for root, dirs, files in os.walk(data_dir):
+    for name in dirs:
+      idx = int(name.split('_')[-1])
+      for i in range(num_conditions):
+        if idx-1 == i:
+          for idx_root,idx_dirs,idx_files in os.walk(os.path.join(data_dir, name)):
+            for idx_file in idx_files:
+              data[i].append(os.path.join(idx_root,idx_file))
+  return data
+
+def get_batch_data(c_c, data, batch_size, idx):
+  batch_data = data[c_c-1]
+  if (idx+1)*batch_size < len(batch_data):
+    return batch_data[idx*batch_size:(idx+1)*batch_size]
+  else:
+    np.random.shuffle(batch_data)
+    return batch_data[:batch_size]
+
 def save_images(images, size, image_path):
   return imsave(inverse_transform(images), size, image_path)
 
 def imread(path, is_grayscale = False):
   if (is_grayscale):
-    return scipy.misc.imread(path, flatten = True).astype(np.float)
+    return scipy.misc.imread(path, flatten = True).astype(np.float32)
   else:
-    return scipy.misc.imread(path).astype(np.float)
+    return scipy.misc.imread(path).astype(np.float32)
 
 #merge all sample_num sample pictures into one picture
 def merge(images, size):
