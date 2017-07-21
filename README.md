@@ -1,4 +1,5 @@
 # DCGAN_anime_tf
+This is a simple implementation of [Deep convolutional GAN](https://arxiv.org/pdf/1511.06434.pdf)
 ### samples after 1 epoch
 ![image](https://github.com/Nielsyang/DCGAN_anime_tf/blob/master/train_01.png)
 
